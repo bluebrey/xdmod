@@ -1,0 +1,123 @@
+FROM rockylinux:8.5
+
+ENV BRANCH=xdmod10.0
+ENV REL=10.0
+ENV BUILD=1.0
+ENV TERM=xterm-256color
+ENV XDMOD_TEST_MODE=fresh_install
+
+LABEL description="The All-In-One XDMoD image for CI builds or local testing."
+
+# We have some caches that we put in place for automated builds.
+# This will copy them into place if they exist
+COPY assets /tmp/assets
+#RUN /tmp/assets/copy-caches.sh
+COPY bin /root/bin
+
+# Copy mariadb
+RUN mv /root/bin/mariadb-wait-ready /usr/libexec/
+
+#Installs the software requirements for installing xdmod
+RUN yum makecache && yum -y install epel-release
+RUN yum -y install \
+    httpd \
+    sudo \
+    wget \
+    vim \
+    git \
+    rpm-build \
+    expect \
+    make \
+    gcc \
+    gcc-c++ \
+    openssl \
+    rsync \
+    nodejs \
+    python39 \
+    cronie \
+    logrotate \
+    ghostscript \
+    jq \
+    gnu-free-sans-fonts \
+    postfix \
+    mariadb-server \
+    mariadb
+
+RUN yum -y install \
+    php \
+    php-common \
+    php-opcache \
+    php-cli \
+    php-gd \
+    php-curl \
+    php-pear \
+    php-zip \
+    php-gmp \
+    php-pdo \
+    php-xml \
+    php-mbstring \
+    php-mysqlnd \
+    php-pecl-apcu \
+    php-pecl-json \
+    php-devel
+
+# Install the mongodb pecl extension
+RUN pecl install mongodb
+
+# Enable the mongodb php extension
+RUN echo "extension=mongodb.so" > /etc/php.d/40-mongodb.ini
+
+# Make sure to clean the cache and installs.
+RUN yum clean all && rm -rf /var/cache/yum
+
+# Directory needed by php-fpm
+RUN mkdir -p /run/php-fpm
+
+# Setup Timezone
+RUN sed -i 's/.*date.timezone[[:space:]]*=.*/date.timezone = UTC/' /etc/php.ini && \
+    sed -i 's/.*memory_limit[[:space:]]*=.*/memory_limit = -1/' /etc/php.ini
+RUN rm /etc/localtime && ln -s /usr/share/zoneinfo/UTC /etc/localtime
+
+# Setup Postfix
+RUN sed -ie 's/inet_interfaces = localhost/#inet_interfaces = localhost/' /etc/postfix/main.cf  && \
+    sed -ie 's/smtp      inet  n       -       n       -       -       smtpd/#smtp      inet  n       -       n       -       -       smtpd/' /etc/postfix/master.cf && \
+    sed -ie 's/smtp      unix  -       -       n       -       -       smtp/smtp      unix  -       -       n       -       -       local/' /etc/postfix/master.cf && \
+    sed -ie 's/relay     unix  -       -       n       -       -       smtp/relay     unix  -       -       n       -       -       local/' /etc/postfix/master.cf && \
+    echo '/.*/ root' >> /etc/postfix/virtual && \
+    postmap /etc/postfix/virtual && \
+    echo 'virtual_alias_maps = regexp:/etc/postfix/virtual' >> /etc/postfix/main.cf && \
+    newaliases
+
+# Install composer
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
+    EXPECTED_SIGNATURE="$(wget -q -O - https://composer.github.io/installer.sig)" && \
+    ACTUAL_SIGNATURE="$(php -r "echo hash_file('SHA384', 'composer-setup.php');")" && \
+    if [ "$EXPECTED_SIGNATURE" != "$ACTUAL_SIGNATURE" ]; then echo 'ERROR: Invalid composer signature'; exit 1; fi && \
+    php composer-setup.php --install-dir=/bin --filename=composer && \
+    php -r "unlink('composer-setup.php');" 
+
+# Generate SSL Key
+RUN openssl genrsa -rand /proc/cpuinfo:/proc/dma:/proc/filesystems:/proc/interrupts:/proc/ioports:/proc/uptime 2048 > /etc/pki/tls/private/localhost.key
+
+# Generate SSL Certificate
+RUN /usr/bin/openssl req -new -key /etc/pki/tls/private/localhost.key -x509 -sha256 -days 365 -set_serial $RANDOM -extensions v3_req -out /etc/pki/tls/certs/localhost.crt -subj "/C=XX/L=Default City/O=Default Company Ltd"
+
+RUN mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+
+WORKDIR /root
+RUN mkdir -p /root/rpmbuild/RPMS/noarch
+RUN git clone --single-branch https://github.com/ubccr/xdmod/ --branch $BRANCH /root/xdmod
+
+WORKDIR /root/xdmod
+RUN COMPOSER=composer-el8.json composer install
+RUN /root/bin/buildrpm xdmod
+
+WORKDIR /root
+RUN dnf module -y reset nodejs
+RUN dnf module -y install nodejs:16
+#RUN /root/xdmod/tests/ci/bootstrap.sh
+
+#RUN yum clean all
+#RUN rm -rf /var/cache/yum /root/xdmod /root/rpmbuild
+
+#WORKDIR /
