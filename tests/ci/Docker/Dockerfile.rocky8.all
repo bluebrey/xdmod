@@ -15,6 +15,7 @@ COPY assets /tmp/assets
 COPY bin /root/bin
 
 # Copy mariadb
+COPY mariadb-server.cnf /etc/my.cnf.d/mariadb-server.cnf
 RUN mv /root/bin/mariadb-wait-ready /usr/libexec/
 
 #Installs the software requirements for installing xdmod
@@ -115,9 +116,9 @@ RUN /root/bin/buildrpm xdmod
 WORKDIR /root
 RUN dnf module -y reset nodejs
 RUN dnf module -y install nodejs:16
-#RUN /root/xdmod/tests/ci/bootstrap.sh
+RUN /root/xdmod/tests/ci/bootstrap.sh
 
-#RUN yum clean all
-#RUN rm -rf /var/cache/yum /root/xdmod /root/rpmbuild
+RUN yum clean all
+RUN rm -rf /var/cache/yum /root/xdmod /root/rpmbuild
 
-#WORKDIR /
+WORKDIR /
