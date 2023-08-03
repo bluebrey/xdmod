@@ -1,0 +1,49 @@
+FROM --platform=linux/amd64 rockylinux:9.2 as stage-amd64
+FROM --platform=linux/arm64 rockylinux:9.2 as stage-arm64
+ARG TARGETARCH
+FROM stage-${TARGETARCH} as final
+ENV BRANCH=xdmod10.0
+LABEL description="Base image for serving XDMoD Web Interface."
+
+#Installs the software requirements for installing xdmod
+RUN yum makecache && yum -y install epel-release
+RUN yum -y install \
+    httpd \
+    sudo \
+    wget \
+    vim \
+    git \
+    expect \
+    make \
+    gcc \
+    gcc-c++ \
+    rsync \
+    nodejs \
+    python39 \
+    cronie \
+    logrotate \
+    ghostscript \
+    jq \
+    gnu-free-sans-fonts \
+    postfix 
+
+# Make sure to clean the cache and installs.
+RUN yum clean all && rm -rf /var/cache/yum
+
+# Make file for timezone
+RUN touch /etc/php.ini
+
+# Setup Timezone
+RUN sed -i 's/.*date.timezone[[:space:]]*=.*/date.timezone = UTC/' /etc/php.ini && \
+    sed -i 's/.*memory_limit[[:space:]]*=.*/memory_limit = -1/' /etc/php.ini
+RUN rm /etc/localtime && ln -s /usr/share/zoneinfo/UTC /etc/localtime
+
+# Setup Postfix
+RUN sed -ie 's/inet_interfaces = localhost/#inet_interfaces = localhost/' /etc/postfix/main.cf  && \
+    sed -ie 's/smtp      inet  n       -       n       -       -       smtpd/#smtp      inet  n       -       n       -       -       smtpd/' /etc/postfix/master.cf && \
+    sed -ie 's/smtp      unix  -       -       n       -       -       smtp/smtp      unix  -       -       n       -       -       local/' /etc/postfix/master.cf && \
+    sed -ie 's/relay     unix  -       -       n       -       -       smtp/relay     unix  -       -       n       -       -       local/' /etc/postfix/master.cf && \
+    echo '/.*/ root' >> /etc/postfix/virtual && \
+    postmap /etc/postfix/virtual && \
+    echo 'virtual_alias_maps = regexp:/etc/postfix/virtual' >> /etc/postfix/main.cf && \
+    newaliases

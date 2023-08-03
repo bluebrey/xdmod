@@ -1,0 +1,108 @@
+#THIS FILE IS FOR TESTING ROCKY9 - IT DOES NOT WORK YET B/C PHP 8.0
+FROM xdmod-base-rocky9:latest
+
+ENV REL=10.0
+ENV BUILD=1.0
+ENV TERM=xterm-256color
+ENV XDMOD_TEST_MODE=fresh_install
+
+LABEL description="The All-In-One XDMoD image for CI builds or local testing."
+
+# We have some caches that we put in place for automated builds.
+# This will copy them into place if they exist
+COPY assets /tmp/assets
+COPY bin /root/bin
+
+#Installs the software requirements for installing xdmod
+RUN yum -y install \
+    rpm-build \
+    openssl \
+    mariadb-server \
+    mariadb
+
+# Copy mariadb
+COPY mariadb-server.cnf /etc/my.cnf.d/mariadb-server.cnf
+RUN mv /root/bin/mariadb-wait-ready /usr/libexec/
+
+#CAUSE OF ISSUE: PHP VERSION INSTALLATION
+#TODO: REWRITE THINGS FOR 8.0
+
+#Install PHP 7.4 instead of 7.2?; nvrm, doesn't work either
+#RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+#RUN yum -y install https://rpms.remirepo.net/enterprise/remi-release-9.rpm
+#RUN yum -y module enable php:remi-7.4
+#RUN yum -y install php-{common,opcache,cli,gd,curl,pear,zip,gmp,pdo,xml,mbstring,mysqlnd,pecl-apcu,json,devel}
+
+RUN yum -y install \
+    php \
+    php-common \
+    php-opcache \
+    php-cli \
+    php-gd \
+    php-curl \
+    php-pear \
+    php-zip \
+    php-gmp \
+    php-pdo \
+    php-xml \
+    php-mbstring \
+    php-mysqlnd \
+    php-pecl-apcu \
+    php-json \
+    php-devel
+
+# Install the mongodb pecl extension
+RUN pecl install mongodb
+
+# Enable the mongodb php extension
+RUN echo "extension=mongodb.so" > /etc/php.d/40-mongodb.ini
+
+# Make sure to clean the cache and installs.
+RUN yum clean all && rm -rf /var/cache/yum
+
+# Directory needed by php-#fpm
+RUN mkdir -p /run/php-fpm
+
+# Install composer
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
+    EXPECTED_SIGNATURE="$(wget -q -O - https://composer.github.io/installer.sig)" && \
+    ACTUAL_SIGNATURE="$(php -r "echo hash_file('SHA384', 'composer-setup.php');")" && \
+    if [ "$EXPECTED_SIGNATURE" != "$ACTUAL_SIGNATURE" ]; then echo 'ERROR: Invalid composer signature'; exit 1; fi && \
+    php composer-setup.php --install-dir=/bin --filename=composer && \
+    php -r "unlink('composer-setup.php');" 
+
+# Generate SSL Key
+RUN openssl genrsa -rand /proc/cpuinfo:/proc/dma:/proc/filesystems:/proc/interrupts:/proc/ioports:/proc/uptime 2048 > /etc/pki/tls/private/localhost.key
+
+# Generate SSL Certificate
+RUN /usr/bin/openssl req -new -key /etc/pki/tls/private/localhost.key -x509 -sha256 -days 365 -set_serial $RANDOM -extensions v3_req -out /etc/pki/tls/certs/localhost.crt -subj "/C=XX/L=Default City/O=Default Company Ltd"
+
+RUN mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+
+WORKDIR /root
+RUN mkdir -p /root/rpmbuild/RPMS/noarch
+RUN git clone --single-branch https://github.com/ubccr/xdmod/ --branch $BRANCH /root/xdmod
+
+#NOTICEABLE SURFACE ISSUES START HERE BECAUSE OF PHP 8.0 INCLUDES:
+#1) composer.json php
+#2) phpoffice/phpword
+#3) zendframework/zend-escaper
+#4) phpspec/prophecy
+#5) phpunit/php-timer
+#6) sebastian/diff
+#7) sebastian/environment
+#8) phpspec/prophecy
+#--> w/ 7.4: curl error 28 while downloading https://cdn.plot.ly/plotly-1.57.1.min.js
+#can't rpmbuild because of lacking files
+WORKDIR /root/xdmod
+RUN COMPOSER=composer-el8.json composer install
+RUN /root/bin/buildrpm xdmod
+
+#can't bootstrap because no rpm
+WORKDIR /root
+RUN /root/xdmod/tests/ci/bootstrap.sh
+
+RUN yum clean all
+RUN rm -rf /var/cache/yum /root/xdmod /root/rpmbuild
+
+WORKDIR /
